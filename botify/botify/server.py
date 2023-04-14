@@ -16,6 +16,7 @@ from botify.recommenders.sticky_artist import StickyArtist
 from botify.recommenders.toppop import TopPop
 from botify.recommenders.indexed import Indexed
 from botify.recommenders.contextual import Contextual
+from botify.recommenders.mega_recommender import MegaRecommender
 from botify.track import Catalog
 
 import numpy as np
@@ -31,6 +32,8 @@ api = Api(app)
 tracks_redis = Redis(app, config_prefix="REDIS_TRACKS")
 tracks_with_diverse_recs_redis = Redis(app, config_prefix="REDIS_TRACKS_WITH_DIVERSE_RECS")
 artists_redis = Redis(app, config_prefix="REDIS_ARTIST")
+prev_goods_redis = Redis(app, config_prefix="REDIS_PREV_GOODS")
+user_recommendations_redis = Redis(app, config_prefix="REDIS_USER_RECOMMENDATIONS")
 recommendations_redis = Redis(app, config_prefix="REDIS_RECOMMENDATIONS")
 recommendations_ub_redis = Redis(app, config_prefix="REDIS_RECOMMENDATIONS_UB")
 
@@ -43,7 +46,10 @@ catalog = Catalog(app).load(
 catalog.upload_tracks(tracks_redis.connection, tracks_with_diverse_recs_redis.connection)
 catalog.upload_artists(artists_redis.connection)
 catalog.upload_recommendations(recommendations_redis.connection)
-catalog.upload_recommendations(recommendations_ub_redis.connection, "RECOMMENDATIONS_UB_FILE_PATH")
+
+# FIXME: remove it. Flushing in release will remove all recomendations for users
+prev_goods_redis.flushdb()
+user_recommendations_redis.flushdb()
 
 parser = reqparse.RequestParser()
 parser.add_argument("track", type=int, location="json", required=True)
@@ -74,21 +80,16 @@ class NextTrack(Resource):
         args = parser.parse_args()
 
         # TODO Seminar 6 step 6: Wire RECOMMENDERS A/B experiment
-        treatment = Experiments.RECOMMENDERS.assign(user)
+        treatment = Experiments.PERSONALIZED.assign(user)
         if treatment == Treatment.T1:
-            recommender = StickyArtist(tracks_redis.connection, artists_redis.connection, catalog)
-        elif treatment == Treatment.T2:
-            recommender = TopPop(tracks_redis.connection, catalog.top_tracks[:100])
-        elif treatment == Treatment.T3:
-            recommender = Indexed(tracks_redis.connection, recommendations_ub_redis.connection, catalog)
-        elif treatment == Treatment.T4:
-            recommender = Indexed(tracks_redis.connection, recommendations_redis.connection, catalog)
-        elif treatment == Treatment.T5:
-            recommender = Contextual(tracks_redis.connection, catalog)
-        elif treatment == Treatment.T6:
-            recommender = Contextual(tracks_with_diverse_recs_redis.connection, catalog)
+            recommender = MegaRecommender(tracks_redis.connection,
+                                          recommendations_redis.connection,
+                                          user_recommendations_redis.connection,
+                                          prev_goods_redis.connection,
+                                          catalog
+                                          )
         else:
-            recommender = Random(tracks_redis.connection)
+            recommender = Contextual(tracks_with_diverse_recs_redis.connection, catalog)
 
         recommendation = recommender.recommend_next(user, args.track, args.time)
 
